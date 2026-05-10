@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 
 struct ClipboardEntry: Codable, Equatable {
     let id: UUID
@@ -120,9 +121,75 @@ final class ClipboardMonitor {
     }
 }
 
+final class LoginAgentManager {
+    private let label = "org.ditto-cp.Ditto"
+
+    private var launchAgentsDirectory: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library", isDirectory: true)
+            .appendingPathComponent("LaunchAgents", isDirectory: true)
+    }
+
+    private var plistURL: URL {
+        launchAgentsDirectory.appendingPathComponent("\(label).plist")
+    }
+
+    func installOrRefresh() {
+        guard let executableURL = Bundle.main.executableURL else {
+            return
+        }
+
+        try? FileManager.default.createDirectory(
+            at: launchAgentsDirectory,
+            withIntermediateDirectories: true
+        )
+
+        let plist: [String: Any] = [
+            "Label": label,
+            "ProgramArguments": [executableURL.path],
+            "RunAtLoad": true,
+            "KeepAlive": true,
+            "ProcessType": "Interactive"
+        ]
+
+        guard let data = try? PropertyListSerialization.data(
+            fromPropertyList: plist,
+            format: .xml,
+            options: 0
+        ) else {
+            return
+        }
+
+        try? data.write(to: plistURL, options: .atomic)
+    }
+
+    func disable() {
+        let domain = "gui/\(getuid())"
+        _ = runLaunchctl(arguments: ["bootout", domain, plistURL.path])
+        _ = runLaunchctl(arguments: ["bootout", "\(domain)/\(label)"])
+        try? FileManager.default.removeItem(at: plistURL)
+    }
+
+    private func runLaunchctl(arguments: [String]) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = arguments
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
+    }
+}
+
 final class HistoryWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
     private let store: ClipboardStore
+    private let searchField = NSSearchField()
     private let tableView = NSTableView()
+    private var filteredEntries: [ClipboardEntry] = []
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
@@ -143,6 +210,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         window.center()
 
         super.init(window: window)
+        filteredEntries = store.entries
         configureContent()
     }
 
@@ -151,11 +219,25 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
     }
 
     func refresh() {
+        applySearch()
+    }
+
+    private func applySearch() {
+        let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if query.isEmpty {
+            filteredEntries = store.entries
+        } else {
+            filteredEntries = store.entries.filter {
+                $0.text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+            }
+        }
+
         tableView.reloadData()
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
-        store.entries.count
+        filteredEntries.count
     }
 
     func tableView(
@@ -163,11 +245,11 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         viewFor tableColumn: NSTableColumn?,
         row: Int
     ) -> NSView? {
-        guard row < store.entries.count else {
+        guard row < filteredEntries.count else {
             return nil
         }
 
-        let entry = store.entries[row]
+        let entry = filteredEntries[row]
         let identifier = tableColumn?.identifier ?? NSUserInterfaceItemIdentifier("clip")
         let cell = tableView.makeView(withIdentifier: identifier, owner: self) as? NSTableCellView
             ?? NSTableCellView()
@@ -199,14 +281,18 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
 
     @objc private func copySelectedEntry() {
         let row = tableView.selectedRow
-        guard row >= 0, row < store.entries.count else {
+        guard row >= 0, row < filteredEntries.count else {
             return
         }
 
-        let entry = store.entries[row]
+        let entry = filteredEntries[row]
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(entry.text, forType: .string)
+    }
+
+    @objc private func searchChanged() {
+        applySearch()
     }
 
     @objc private func clearHistory() {
@@ -222,6 +308,12 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         let scrollView = NSScrollView()
         scrollView.hasVerticalScroller = true
         scrollView.translatesAutoresizingMaskIntoConstraints = false
+
+        searchField.placeholderString = "Search"
+        searchField.target = self
+        searchField.action = #selector(searchChanged)
+        searchField.sendsSearchStringImmediately = true
+        searchField.translatesAutoresizingMaskIntoConstraints = false
 
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.rowHeight = 30
@@ -263,16 +355,21 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         toolbar.translatesAutoresizingMaskIntoConstraints = false
 
         let root = NSView()
+        root.addSubview(searchField)
         root.addSubview(scrollView)
         root.addSubview(toolbar)
         window.contentView = root
 
         NSLayoutConstraint.activate([
+            searchField.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
+            searchField.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
+            searchField.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+
             toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             toolbar.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -12),
             toolbar.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -12),
 
-            scrollView.topAnchor.constraint(equalTo: root.topAnchor),
+            scrollView.topAnchor.constraint(equalTo: searchField.bottomAnchor, constant: 12),
             scrollView.leadingAnchor.constraint(equalTo: root.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -12)
@@ -282,12 +379,17 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private let store = ClipboardStore()
+    private let loginAgentManager = LoginAgentManager()
     private var monitor: ClipboardMonitor?
     private var statusItem: NSStatusItem?
     private var historyWindowController: HistoryWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
+        ProcessInfo.processInfo.disableAutomaticTermination(
+            "Ditto monitors the clipboard from the menu bar."
+        )
+        loginAgentManager.installOrRefresh()
         configureStatusItem()
 
         let monitor = ClipboardMonitor(store: store)
@@ -296,6 +398,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         monitor.start()
         self.monitor = monitor
+    }
+
+    func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+        false
     }
 
     @objc private func showHistory() {
@@ -310,6 +416,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func quit() {
+        loginAgentManager.disable()
         NSApp.terminate(nil)
     }
 

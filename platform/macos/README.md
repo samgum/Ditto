@@ -14,6 +14,8 @@ The first macOS target is intentionally small:
 - local history stored under `~/Library/Application Support/Ditto/history.json`
 - history window
 - copy selected history item back to the pasteboard
+- login auto-start through a user LaunchAgent
+- LaunchAgent `KeepAlive` restart after crashes or unexpected exits
 - `.app` and `.dmg` packaging script
 
 The existing Windows project is MFC/Win32-heavy, so the macOS target does not
@@ -43,6 +45,19 @@ The generated package is written to:
 ```text
 platform/macos/dist/Ditto-macOS.dmg
 ```
+
+The DMG contains `Ditto.app` and an `/Applications` shortcut. For a stable login
+item path, drag `Ditto.app` into `/Applications` before launching it.
+
+On launch, Ditto writes this user LaunchAgent:
+
+```text
+~/Library/LaunchAgents/org.ditto-cp.Ditto.plist
+```
+
+The agent uses `RunAtLoad` and `KeepAlive`, so Ditto starts on login and is
+restarted by launchd after unexpected exits. Choosing `Quit Ditto` from the menu
+bar item removes the LaunchAgent before terminating the app.
 
 ## Migration direction
 

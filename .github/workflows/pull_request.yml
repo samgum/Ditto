@@ -4,6 +4,8 @@ on:
   pull_request:
     paths-ignore:
       - '**/README.md'
+      - 'platform/macos/**'
+      - '.github/workflows/macos.yml'
 
 env:
   SOLUTION_FILE_PATH: CP_Main_10.sln

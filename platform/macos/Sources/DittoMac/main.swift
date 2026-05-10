@@ -253,25 +253,9 @@ struct ClipboardEntry: Codable, Equatable {
 }
 
 final class ClipboardStore {
-    private struct ClipboardArchive: Codable {
-        let version: Int
-        let entries: [ArchiveEntry]
-    }
-
-    private struct ArchiveEntry: Codable {
-        let id: UUID
-        let text: String?
-        let rtfBase64: String?
-        let htmlBase64: String?
-        let imageBase64: String?
-        let fileURLs: [String]?
-        let createdAt: Date
-        let isFavorite: Bool?
-        let groupName: String?
-    }
-
-    private let fileURL: URL
-    private let dataDirectory: URL
+    private let legacyFileURL: URL
+    private let legacyDataDirectory: URL
+    private let database: MacClipboardDatabase
     private(set) var entries: [ClipboardEntry] = []
 
     init() {
@@ -284,13 +268,11 @@ final class ClipboardStore {
             at: directory,
             withIntermediateDirectories: true
         )
-        fileURL = directory.appendingPathComponent("history.json")
-        dataDirectory = directory.appendingPathComponent("Data", isDirectory: true)
-        try? FileManager.default.createDirectory(
-            at: dataDirectory,
-            withIntermediateDirectories: true
-        )
+        legacyFileURL = directory.appendingPathComponent("history.json")
+        legacyDataDirectory = directory.appendingPathComponent("Data", isDirectory: true)
+        database = try! MacClipboardDatabase(url: directory.appendingPathComponent("Ditto.db"))
         load()
+        migrateLegacyJSONIfNeeded()
     }
 
     func addClipboardPayload(
@@ -429,68 +411,23 @@ final class ClipboardStore {
     }
 
     func exportArchive(to url: URL) throws {
-        let archive = ClipboardArchive(
-            version: 1,
-            entries: entries.map { entry in
-                ArchiveEntry(
-                    id: entry.id,
-                    text: entry.text,
-                    rtfBase64: entry.rtfFileName.flatMap { blobData(named: $0)?.base64EncodedString() },
-                    htmlBase64: entry.htmlFileName.flatMap { blobData(named: $0)?.base64EncodedString() },
-                    imageBase64: entry.imageFileName.flatMap { _ in imageData(for: entry)?.base64EncodedString() },
-                    fileURLs: entry.fileURLs,
-                    createdAt: entry.createdAt,
-                    isFavorite: entry.isFavorite,
-                    groupName: entry.groupName
-                )
-            }
-        )
-
-        let encoder = JSONEncoder()
-        encoder.dateEncodingStrategy = .iso8601
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        let data = try encoder.encode(archive)
-        try data.write(to: url, options: Data.WritingOptions.atomic)
+        try database.exportArchive(entries: entries, to: url)
     }
 
     func importArchive(from url: URL) throws {
-        let data = try Data(contentsOf: url)
-        let decoder = JSONDecoder()
-        decoder.dateDecodingStrategy = .iso8601
-        let archive = try decoder.decode(ClipboardArchive.self, from: data)
+        let archiveDatabase = try MacClipboardDatabase(url: url, useWAL: false, readOnly: true)
+        let importedEntries = try archiveDatabase.loadEntries()
 
-        var importedEntries: [ClipboardEntry] = []
-        for archiveEntry in archive.entries {
-            let rtfFileName = archiveEntry.rtfBase64
-                .flatMap { Data(base64Encoded: $0) }
-                .flatMap { saveBlob($0, fileExtension: "rtf") }
-            let htmlFileName = archiveEntry.htmlBase64
-                .flatMap { Data(base64Encoded: $0) }
-                .flatMap { saveBlob($0, fileExtension: "html") }
-            let imageFileName = archiveEntry.imageBase64
-                .flatMap { Data(base64Encoded: $0) }
-                .flatMap { saveBlob($0, fileExtension: "png") }
-
-            importedEntries.append(
-                ClipboardEntry(
-                    id: archiveEntry.id,
-                    text: archiveEntry.text,
-                    rtfFileName: rtfFileName,
-                    htmlFileName: htmlFileName,
-                    imageFileName: imageFileName,
-                    fileURLs: archiveEntry.fileURLs,
-                    createdAt: archiveEntry.createdAt,
-                    isFavorite: archiveEntry.isFavorite,
-                    groupName: archiveEntry.groupName
-                )
-            )
+        for entry in importedEntries {
+            for key in [entry.rtfFileName, entry.htmlFileName, entry.imageFileName].compactMap({ $0 }) {
+                guard let data = archiveDatabase.blobData(key: key) else {
+                    continue
+                }
+                _ = try database.saveBlob(data, key: key, fileExtension: "")
+            }
         }
 
-        let importedIDs = Set(importedEntries.map(\.id))
-        removeEntries { importedIDs.contains($0.id) }
-        entries = (importedEntries + entries).sorted { $0.createdAt > $1.createdAt }
-        trim()
-        save()
+        mergeImportedEntries(importedEntries)
     }
 
     @discardableResult
@@ -536,26 +473,15 @@ final class ClipboardStore {
             return nil
         }
 
-        let fileName = "\(UUID().uuidString).\(fileExtension)"
-        let fileURL = dataDirectory.appendingPathComponent(fileName)
-
-        guard (try? data.write(to: fileURL, options: .atomic)) != nil else {
-            return nil
-        }
-
-        return fileName
+        return try? database.saveBlob(data, fileExtension: fileExtension)
     }
 
     private func blobData(named fileName: String) -> Data? {
-        try? Data(contentsOf: dataDirectory.appendingPathComponent(fileName))
+        database.blobData(key: fileName)
     }
 
     private func removeBlobFiles(for entry: ClipboardEntry) {
-        for fileName in [entry.rtfFileName, entry.htmlFileName, entry.imageFileName].compactMap({ $0 }) {
-            try? FileManager.default.removeItem(
-                at: dataDirectory.appendingPathComponent(fileName)
-            )
-        }
+        database.removeBlobs(keys: [entry.rtfFileName, entry.htmlFileName, entry.imageFileName].compactMap { $0 })
     }
 
     func legacyImageData(for entry: ClipboardEntry) -> Data? {
@@ -563,15 +489,7 @@ final class ClipboardStore {
             return nil
         }
 
-        if let data = blobData(named: imageFileName) {
-            return data
-        }
-
-        let legacyImagesDirectory = fileURL
-            .deletingLastPathComponent()
-            .appendingPathComponent("Images", isDirectory: true)
-
-        return try? Data(contentsOf: legacyImagesDirectory.appendingPathComponent(imageFileName))
+        blobData(named: imageFileName)
     }
 
     func imageData(for entry: ClipboardEntry) -> Data? {
@@ -580,12 +498,7 @@ final class ClipboardStore {
 
     func removeAll() {
         entries.removeAll()
-        try? FileManager.default.removeItem(at: dataDirectory)
-        try? FileManager.default.createDirectory(
-            at: dataDirectory,
-            withIntermediateDirectories: true
-        )
-        save()
+        try? database.removeAll()
     }
 
     private func trim() {
@@ -599,22 +512,65 @@ final class ClipboardStore {
     }
 
     private func load() {
-        guard let data = try? Data(contentsOf: fileURL) else {
+        guard let loadedEntries = try? database.loadEntries() else {
             return
         }
 
-        entries = (try? JSONDecoder().decode([ClipboardEntry].self, from: data)) ?? []
+        entries = loadedEntries
     }
 
     private func save() {
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try? database.replaceEntries(entries)
+    }
 
-        guard let data = try? encoder.encode(entries) else {
+    private func migrateLegacyJSONIfNeeded() {
+        guard entries.isEmpty, let data = try? Data(contentsOf: legacyFileURL) else {
             return
         }
 
-        try? data.write(to: fileURL, options: .atomic)
+        guard let legacyEntries = try? JSONDecoder().decode([ClipboardEntry].self, from: data) else {
+            return
+        }
+
+        let migratedEntries = legacyEntries.map { legacyEntry in
+            ClipboardEntry(
+                id: legacyEntry.id,
+                text: legacyEntry.text,
+                rtfFileName: migrateLegacyBlob(legacyEntry.rtfFileName, fileExtension: "rtf"),
+                htmlFileName: migrateLegacyBlob(legacyEntry.htmlFileName, fileExtension: "html"),
+                imageFileName: migrateLegacyBlob(legacyEntry.imageFileName, fileExtension: "png"),
+                fileURLs: legacyEntry.fileURLs,
+                createdAt: legacyEntry.createdAt,
+                isFavorite: legacyEntry.isFavorite,
+                groupName: legacyEntry.groupName
+            )
+        }
+
+        entries = migratedEntries.sorted { $0.createdAt > $1.createdAt }
+        trim()
+        save()
+    }
+
+    private func migrateLegacyBlob(_ fileName: String?, fileExtension: String) -> String? {
+        guard let fileName else {
+            return nil
+        }
+
+        let legacyImagesDirectory = legacyFileURL
+            .deletingLastPathComponent()
+            .appendingPathComponent("Images", isDirectory: true)
+        let legacyURLs = [
+            legacyDataDirectory.appendingPathComponent(fileName),
+            legacyImagesDirectory.appendingPathComponent(fileName)
+        ]
+
+        for url in legacyURLs {
+            if let data = try? Data(contentsOf: url), data.isEmpty == false {
+                return saveBlob(data, fileExtension: fileExtension)
+            }
+        }
+
+        return nil
     }
 }
 
@@ -1409,8 +1365,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func exportHistory() {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.json]
-        panel.nameFieldStringValue = "Ditto-History.json"
+        panel.allowedContentTypes = [UTType(filenameExtension: "db") ?? .data]
+        panel.nameFieldStringValue = "Ditto-History.db"
 
         panel.begin { [weak self] response in
             guard response == .OK, let url = panel.url else {
@@ -1428,7 +1384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func importHistory() {
         let panel = NSOpenPanel()
-        panel.allowedContentTypes = [.json]
+        panel.allowedContentTypes = [UTType(filenameExtension: "db") ?? .data]
         panel.allowsMultipleSelection = false
 
         panel.begin { [weak self] response in

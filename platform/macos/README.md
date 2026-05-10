@@ -13,7 +13,8 @@ The first macOS target is intentionally small:
 - polling-based `NSPasteboard` text capture
 - image clipboard capture and image restore to the pasteboard
 - multi-format entries that can store text, RTF, HTML, PNG, and file URLs
-- local history stored under `~/Library/Application Support/Ditto/history.json`
+- local history stored in SQLite under
+  `~/Library/Application Support/Ditto/Ditto.db`
 - history window
 - search in the history window
 - recent items in the menu bar menu
@@ -24,7 +25,7 @@ The first macOS target is intentionally small:
 - copy selected history item back to the pasteboard
 - paste selected history item back into the previous application
 - delete selected history item and clear all history
-- import and export a self-contained Ditto macOS history archive as JSON
+- import and export a self-contained Ditto macOS history archive as SQLite
 - import Windows Ditto SQLite databases (`Ditto.db`) and Ditto SQLite export
   files into the macOS history
 - login auto-start through a user LaunchAgent
@@ -81,8 +82,13 @@ Automatic paste uses a synthesized Command+V key event after restoring focus to
 the previous application. macOS may require enabling Ditto in System Settings >
 Privacy & Security > Accessibility before this works.
 
-History import/export uses a macOS-specific JSON archive. RTF, HTML, and image
-payloads are embedded as base64 so the archive can be moved between Macs.
+History import/export uses a macOS-specific SQLite archive. Text metadata and
+binary payloads are stored in database tables so the exported file stays a
+single `.db` file without JSON base64 wrapping or sidecar data directories.
+
+Existing `history.json` installs are migrated into `Ditto.db` on first launch.
+The legacy JSON and sidecar data files are only read for migration and are not
+used as the active history store after the SQLite database has been created.
 
 Windows Ditto database migration is available from the menu bar item through
 `Import Windows Ditto Database...`. It reads the original `Main` and `Data`

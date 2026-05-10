@@ -1,0 +1,33 @@
+name: macOS
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'platform/macos/**'
+      - '.github/workflows/macos.yml'
+  push:
+    branches:
+      - master
+    paths:
+      - 'platform/macos/**'
+      - '.github/workflows/macos.yml'
+
+jobs:
+  build:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build macOS target
+        run: swift build --package-path platform/macos -c release
+
+      - name: Package DMG
+        run: bash platform/macos/scripts/package-dmg.sh
+
+      - name: Upload DMG
+        uses: actions/upload-artifact@v4
+        with:
+          name: Ditto-macOS
+          path: platform/macos/dist/Ditto-macOS.dmg

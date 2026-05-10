@@ -381,7 +381,7 @@ final class ClipboardStore {
                     text: entry.text,
                     rtfBase64: entry.rtfFileName.flatMap { blobData(named: $0)?.base64EncodedString() },
                     htmlBase64: entry.htmlFileName.flatMap { blobData(named: $0)?.base64EncodedString() },
-                    imageBase64: entry.imageFileName.flatMap { imageData(for: entry)?.base64EncodedString() },
+                    imageBase64: entry.imageFileName.flatMap { _ in imageData(for: entry)?.base64EncodedString() },
                     fileURLs: entry.fileURLs,
                     createdAt: entry.createdAt
                 )
@@ -392,7 +392,7 @@ final class ClipboardStore {
         encoder.dateEncodingStrategy = .iso8601
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         let data = try encoder.encode(archive)
-        try data.write(to: url, options: .atomic)
+        try data.write(to: url, options: Data.WritingOptions.atomic)
     }
 
     func importArchive(from url: URL) throws {

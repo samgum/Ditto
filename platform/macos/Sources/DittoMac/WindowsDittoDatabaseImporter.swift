@@ -277,11 +277,7 @@ final class WindowsDittoDatabaseImporter {
             bytes.removeLast()
         }
 
-        let encoding = CFStringConvertEncodingToNSStringEncoding(
-            CFStringEncoding(kCFStringEncodingWindowsLatin1)
-        )
-        return String(data: bytes, encoding: String.Encoding(rawValue: encoding)) ??
-            String(data: bytes, encoding: .utf8) ??
+        return String(data: bytes, encoding: .utf8) ??
             String(data: bytes, encoding: .isoLatin1)
     }
 

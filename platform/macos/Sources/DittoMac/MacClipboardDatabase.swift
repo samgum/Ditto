@@ -90,18 +90,18 @@ final class MacClipboardDatabase {
                     """,
                     binds: { statement in
                         sqlite3_bind_text(statement, 1, entry.id.uuidString, -1, databaseTransientDestructor)
-                        bindOptionalText(statement, 2, entry.text)
-                        bindOptionalText(statement, 3, entry.rtfFileName)
-                        bindOptionalText(statement, 4, entry.htmlFileName)
-                        bindOptionalText(statement, 5, entry.imageFileName)
-                        bindOptionalText(statement, 6, fileURLsJson)
+                        self.bindOptionalText(statement, 2, entry.text)
+                        self.bindOptionalText(statement, 3, entry.rtfFileName)
+                        self.bindOptionalText(statement, 4, entry.htmlFileName)
+                        self.bindOptionalText(statement, 5, entry.imageFileName)
+                        self.bindOptionalText(statement, 6, fileURLsJson)
                         sqlite3_bind_double(statement, 7, entry.createdAt.timeIntervalSince1970)
                         if let isFavorite = entry.isFavorite {
                             sqlite3_bind_int(statement, 8, isFavorite ? 1 : 0)
                         } else {
                             sqlite3_bind_null(statement, 8)
                         }
-                        bindOptionalText(statement, 9, entry.groupName)
+                        self.bindOptionalText(statement, 9, entry.groupName)
                     }
                 )
             }
@@ -117,7 +117,7 @@ final class MacClipboardDatabase {
             binds: { statement in
                 sqlite3_bind_text(statement, 1, key, -1, databaseTransientDestructor)
                 sqlite3_bind_text(statement, 2, fileExtension, -1, databaseTransientDestructor)
-                data.withUnsafeBytes { buffer in
+                _ = data.withUnsafeBytes { buffer in
                     sqlite3_bind_blob(statement, 3, buffer.baseAddress, Int32(data.count), databaseTransientDestructor)
                 }
             }

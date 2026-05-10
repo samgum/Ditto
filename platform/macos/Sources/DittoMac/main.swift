@@ -489,7 +489,7 @@ final class ClipboardStore {
             return nil
         }
 
-        blobData(named: imageFileName)
+        return blobData(named: imageFileName)
     }
 
     func imageData(for entry: ClipboardEntry) -> Data? {

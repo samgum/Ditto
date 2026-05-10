@@ -18,9 +18,12 @@ The first macOS target is intentionally small:
 - search in the history window
 - recent items in the menu bar menu
 - global Option+Command+V shortcut to show history
+- configurable global hot key from Preferences
+- English, Simplified Chinese, and Traditional Chinese language packs
 - copy selected history item back to the pasteboard
 - paste selected history item back into the previous application
 - delete selected history item and clear all history
+- import and export a self-contained Ditto macOS history archive as JSON
 - login auto-start through a user LaunchAgent
 - LaunchAgent `KeepAlive` restart after crashes or unexpected exits
 - `.app` and `.dmg` packaging script
@@ -69,6 +72,10 @@ bar item removes the LaunchAgent before terminating the app.
 Automatic paste uses a synthesized Command+V key event after restoring focus to
 the previous application. macOS may require enabling Ditto in System Settings >
 Privacy & Security > Accessibility before this works.
+
+History import/export uses a macOS-specific JSON archive. RTF, HTML, and image
+payloads are embedded as base64 so the archive can be moved between Macs. This
+is not yet the same format as the Windows Ditto SQLite database.
 
 ## Migration direction
 

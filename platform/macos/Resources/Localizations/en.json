@@ -1,0 +1,23 @@
+{
+  "app_name": "Ditto",
+  "clear": "Clear",
+  "clip": "Clip",
+  "close": "Close",
+  "copy": "Copy",
+  "date": "Date",
+  "delete": "Delete",
+  "disabled": "Disabled",
+  "export_history": "Export History...",
+  "export_success": "History exported.",
+  "hot_key": "Hot Key",
+  "import_history": "Import History...",
+  "import_success": "History imported.",
+  "language": "Language",
+  "operation_failed": "Operation failed.",
+  "paste": "Paste",
+  "preferences": "Preferences...",
+  "quit": "Quit Ditto",
+  "search": "Search",
+  "show_history": "Show History",
+  "type": "Type"
+}

@@ -1,0 +1,23 @@
+{
+  "app_name": "Ditto",
+  "clear": "清空",
+  "clip": "剪贴内容",
+  "close": "关闭",
+  "copy": "复制",
+  "date": "日期",
+  "delete": "删除",
+  "disabled": "禁用",
+  "export_history": "导出历史...",
+  "export_success": "历史已导出。",
+  "hot_key": "快捷键",
+  "import_history": "导入历史...",
+  "import_success": "历史已导入。",
+  "language": "语言",
+  "operation_failed": "操作失败。",
+  "paste": "粘贴",
+  "preferences": "偏好设置...",
+  "quit": "退出 Ditto",
+  "search": "搜索",
+  "show_history": "显示历史",
+  "type": "类型"
+}

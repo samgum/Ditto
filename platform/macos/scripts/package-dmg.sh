@@ -27,6 +27,9 @@ mkdir -p "$MACOS_DIR" "$RESOURCES_DIR"
 
 cp "$BINARY_PATH" "$MACOS_DIR/Ditto"
 cp "$ROOT_DIR/Resources/Info.plist" "$CONTENTS_DIR/Info.plist"
+if [[ -d "$ROOT_DIR/Resources/Localizations" ]]; then
+  cp -R "$ROOT_DIR/Resources/Localizations" "$RESOURCES_DIR/Localizations"
+fi
 chmod +x "$MACOS_DIR/Ditto"
 
 ICON_SOURCE="$REPO_DIR/res/Martin_Icon.png"

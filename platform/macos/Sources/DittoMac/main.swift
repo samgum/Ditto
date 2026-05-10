@@ -2,9 +2,139 @@ import AppKit
 import Carbon
 import CoreGraphics
 import Darwin
+import UniformTypeIdentifiers
 
 extension NSPasteboard.PasteboardType {
     static let dittoHTML = NSPasteboard.PasteboardType("public.html")
+}
+
+final class LocalizationManager {
+    static let shared = LocalizationManager()
+
+    private let languageKey = "Ditto.Language"
+    private var strings: [String: String] = [:]
+
+    var currentLanguage: String {
+        UserDefaults.standard.string(forKey: languageKey) ?? "en"
+    }
+
+    let languages: [(code: String, name: String)] = [
+        ("en", "English"),
+        ("zh-Hans", "简体中文"),
+        ("zh-Hant", "繁體中文")
+    ]
+
+    private init() {
+        loadLanguage(currentLanguage)
+    }
+
+    func setLanguage(_ code: String) {
+        UserDefaults.standard.set(code, forKey: languageKey)
+        loadLanguage(code)
+    }
+
+    func text(_ key: String) -> String {
+        strings[key] ?? Self.fallbackStrings[key] ?? key
+    }
+
+    private func loadLanguage(_ code: String) {
+        guard
+            let resourceURL = Bundle.main.resourceURL?
+                .appendingPathComponent("Localizations", isDirectory: true)
+                .appendingPathComponent("\(code).json"),
+            let data = try? Data(contentsOf: resourceURL),
+            let decoded = try? JSONDecoder().decode([String: String].self, from: data)
+        else {
+            strings = Self.fallbackStrings
+            return
+        }
+
+        strings = decoded
+    }
+
+    private static let fallbackStrings: [String: String] = [
+        "app_name": "Ditto",
+        "show_history": "Show History",
+        "preferences": "Preferences...",
+        "import_history": "Import History...",
+        "export_history": "Export History...",
+        "quit": "Quit Ditto",
+        "search": "Search",
+        "clip": "Clip",
+        "type": "Type",
+        "date": "Date",
+        "copy": "Copy",
+        "paste": "Paste",
+        "delete": "Delete",
+        "clear": "Clear",
+        "language": "Language",
+        "hot_key": "Hot Key",
+        "close": "Close",
+        "disabled": "Disabled",
+        "import_success": "History imported.",
+        "export_success": "History exported.",
+        "operation_failed": "Operation failed."
+    ]
+}
+
+enum HotKeyChoice: String, CaseIterable {
+    case optionCommandV
+    case controlOptionV
+    case commandShiftV
+    case disabled
+
+    static let defaultsKey = "Ditto.HotKey"
+
+    static var current: HotKeyChoice {
+        get {
+            guard
+                let value = UserDefaults.standard.string(forKey: defaultsKey),
+                let choice = HotKeyChoice(rawValue: value)
+            else {
+                return .optionCommandV
+            }
+
+            return choice
+        }
+        set {
+            UserDefaults.standard.set(newValue.rawValue, forKey: defaultsKey)
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .optionCommandV:
+            return "Option+Command+V"
+        case .controlOptionV:
+            return "Control+Option+V"
+        case .commandShiftV:
+            return "Command+Shift+V"
+        case .disabled:
+            return LocalizationManager.shared.text("disabled")
+        }
+    }
+
+    var keyCode: UInt32? {
+        switch self {
+        case .optionCommandV, .controlOptionV, .commandShiftV:
+            return UInt32(kVK_ANSI_V)
+        case .disabled:
+            return nil
+        }
+    }
+
+    var modifiers: UInt32 {
+        switch self {
+        case .optionCommandV:
+            return UInt32(optionKey | cmdKey)
+        case .controlOptionV:
+            return UInt32(controlKey | optionKey)
+        case .commandShiftV:
+            return UInt32(cmdKey | shiftKey)
+        case .disabled:
+            return 0
+        }
+    }
 }
 
 struct ClipboardEntry: Codable, Equatable {
@@ -96,6 +226,21 @@ struct ClipboardEntry: Codable, Equatable {
 }
 
 final class ClipboardStore {
+    private struct ClipboardArchive: Codable {
+        let version: Int
+        let entries: [ArchiveEntry]
+    }
+
+    private struct ArchiveEntry: Codable {
+        let id: UUID
+        let text: String?
+        let rtfBase64: String?
+        let htmlBase64: String?
+        let imageBase64: String?
+        let fileURLs: [String]?
+        let createdAt: Date
+    }
+
     private let fileURL: URL
     private let dataDirectory: URL
     private(set) var entries: [ClipboardEntry] = []
@@ -224,6 +369,67 @@ final class ClipboardStore {
 
     func removeEntry(id: UUID) {
         removeEntries { $0.id == id }
+        save()
+    }
+
+    func exportArchive(to url: URL) throws {
+        let archive = ClipboardArchive(
+            version: 1,
+            entries: entries.map { entry in
+                ArchiveEntry(
+                    id: entry.id,
+                    text: entry.text,
+                    rtfBase64: entry.rtfFileName.flatMap { blobData(named: $0)?.base64EncodedString() },
+                    htmlBase64: entry.htmlFileName.flatMap { blobData(named: $0)?.base64EncodedString() },
+                    imageBase64: entry.imageFileName.flatMap { imageData(for: entry)?.base64EncodedString() },
+                    fileURLs: entry.fileURLs,
+                    createdAt: entry.createdAt
+                )
+            }
+        )
+
+        let encoder = JSONEncoder()
+        encoder.dateEncodingStrategy = .iso8601
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(archive)
+        try data.write(to: url, options: .atomic)
+    }
+
+    func importArchive(from url: URL) throws {
+        let data = try Data(contentsOf: url)
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        let archive = try decoder.decode(ClipboardArchive.self, from: data)
+
+        var importedEntries: [ClipboardEntry] = []
+        for archiveEntry in archive.entries {
+            let rtfFileName = archiveEntry.rtfBase64
+                .flatMap { Data(base64Encoded: $0) }
+                .flatMap { saveBlob($0, fileExtension: "rtf") }
+            let htmlFileName = archiveEntry.htmlBase64
+                .flatMap { Data(base64Encoded: $0) }
+                .flatMap { saveBlob($0, fileExtension: "html") }
+            let imageFileName = archiveEntry.imageBase64
+                .flatMap { Data(base64Encoded: $0) }
+                .flatMap { saveBlob($0, fileExtension: "png") }
+
+            importedEntries.append(
+                ClipboardEntry(
+                    id: archiveEntry.id,
+                    text: archiveEntry.text,
+                    rtfFileName: rtfFileName,
+                    htmlFileName: htmlFileName,
+                    imageFileName: imageFileName,
+                    fileURLs: archiveEntry.fileURLs,
+                    createdAt: archiveEntry.createdAt
+                )
+            )
+        }
+
+        let importedIDs = Set(importedEntries.map(\.id))
+        removeEntries { importedIDs.contains($0.id) }
+        entries = (importedEntries + entries).sorted { $0.createdAt > $1.createdAt }
+        trim()
         save()
     }
 
@@ -461,6 +667,10 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
     private let pasteHandler: () -> Void
     private let searchField = NSSearchField()
     private let tableView = NSTableView()
+    private let copyButton = NSButton(title: "", target: nil, action: nil)
+    private let pasteButton = NSButton(title: "", target: nil, action: nil)
+    private let deleteButton = NSButton(title: "", target: nil, action: nil)
+    private let clearButton = NSButton(title: "", target: nil, action: nil)
     private var filteredEntries: [ClipboardEntry] = []
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -479,7 +689,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
             backing: .buffered,
             defer: false
         )
-        window.title = "Ditto"
+        window.title = LocalizationManager.shared.text("app_name")
         window.center()
 
         super.init(window: window)
@@ -493,6 +703,22 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
 
     func refresh() {
         applySearch()
+    }
+
+    func refreshText() {
+        window?.title = LocalizationManager.shared.text("app_name")
+        searchField.placeholderString = LocalizationManager.shared.text("search")
+        tableView.tableColumns.first { $0.identifier.rawValue == "clip" }?.title =
+            LocalizationManager.shared.text("clip")
+        tableView.tableColumns.first { $0.identifier.rawValue == "type" }?.title =
+            LocalizationManager.shared.text("type")
+        tableView.tableColumns.first { $0.identifier.rawValue == "date" }?.title =
+            LocalizationManager.shared.text("date")
+        copyButton.title = LocalizationManager.shared.text("copy")
+        pasteButton.title = LocalizationManager.shared.text("paste")
+        deleteButton.title = LocalizationManager.shared.text("delete")
+        clearButton.title = LocalizationManager.shared.text("clear")
+        tableView.reloadData()
     }
 
     private func applySearch() {
@@ -600,7 +826,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         scrollView.hasVerticalScroller = true
         scrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        searchField.placeholderString = "Search"
+        searchField.placeholderString = LocalizationManager.shared.text("search")
         searchField.target = self
         searchField.action = #selector(searchChanged)
         searchField.sendsSearchStringImmediately = true
@@ -615,48 +841,40 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         tableView.doubleAction = #selector(pasteSelectedEntry)
 
         let clipColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("clip"))
-        clipColumn.title = "Clip"
+        clipColumn.title = LocalizationManager.shared.text("clip")
         clipColumn.width = 500
         tableView.addTableColumn(clipColumn)
 
         let typeColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("type"))
-        typeColumn.title = "Type"
+        typeColumn.title = LocalizationManager.shared.text("type")
         typeColumn.width = 80
         tableView.addTableColumn(typeColumn)
 
         let dateColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("date"))
-        dateColumn.title = "Date"
+        dateColumn.title = LocalizationManager.shared.text("date")
         dateColumn.width = 180
         tableView.addTableColumn(dateColumn)
 
         scrollView.documentView = tableView
 
-        let copyButton = NSButton(
-            title: "Copy",
-            target: self,
-            action: #selector(copySelectedEntry)
-        )
+        copyButton.title = LocalizationManager.shared.text("copy")
+        copyButton.target = self
+        copyButton.action = #selector(copySelectedEntry)
         copyButton.bezelStyle = .rounded
 
-        let pasteButton = NSButton(
-            title: "Paste",
-            target: self,
-            action: #selector(pasteSelectedEntry)
-        )
+        pasteButton.title = LocalizationManager.shared.text("paste")
+        pasteButton.target = self
+        pasteButton.action = #selector(pasteSelectedEntry)
         pasteButton.bezelStyle = .rounded
 
-        let deleteButton = NSButton(
-            title: "Delete",
-            target: self,
-            action: #selector(deleteSelectedEntry)
-        )
+        deleteButton.title = LocalizationManager.shared.text("delete")
+        deleteButton.target = self
+        deleteButton.action = #selector(deleteSelectedEntry)
         deleteButton.bezelStyle = .rounded
 
-        let clearButton = NSButton(
-            title: "Clear",
-            target: self,
-            action: #selector(clearHistory)
-        )
+        clearButton.title = LocalizationManager.shared.text("clear")
+        clearButton.target = self
+        clearButton.action = #selector(clearHistory)
         clearButton.bezelStyle = .rounded
 
         let toolbar = NSStackView(views: [copyButton, pasteButton, deleteButton, clearButton])
@@ -687,6 +905,118 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
     }
 }
 
+final class PreferencesWindowController: NSWindowController {
+    private let languageLabel = NSTextField(labelWithString: "")
+    private let hotKeyLabel = NSTextField(labelWithString: "")
+    private let languagePopup = NSPopUpButton()
+    private let hotKeyPopup = NSPopUpButton()
+    private let closeButton = NSButton(title: "", target: nil, action: nil)
+    private let onChanged: () -> Void
+
+    init(onChanged: @escaping () -> Void) {
+        self.onChanged = onChanged
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 170),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = LocalizationManager.shared.text("preferences")
+        window.center()
+
+        super.init(window: window)
+        configureContent()
+    }
+
+    required init?(coder: NSCoder) {
+        nil
+    }
+
+    func refreshText() {
+        window?.title = LocalizationManager.shared.text("preferences")
+        languageLabel.stringValue = LocalizationManager.shared.text("language")
+        hotKeyLabel.stringValue = LocalizationManager.shared.text("hot_key")
+        closeButton.title = LocalizationManager.shared.text("close")
+        configurePopupTitles()
+    }
+
+    @objc private func languageChanged() {
+        let selected = LocalizationManager.shared.languages[languagePopup.indexOfSelectedItem]
+        LocalizationManager.shared.setLanguage(selected.code)
+        refreshText()
+        onChanged()
+    }
+
+    @objc private func hotKeyChanged() {
+        HotKeyChoice.current = HotKeyChoice.allCases[hotKeyPopup.indexOfSelectedItem]
+        onChanged()
+    }
+
+    @objc private func closeWindow() {
+        close()
+    }
+
+    private func configureContent() {
+        guard let window else {
+            return
+        }
+
+        refreshText()
+
+        languagePopup.target = self
+        languagePopup.action = #selector(languageChanged)
+        hotKeyPopup.target = self
+        hotKeyPopup.action = #selector(hotKeyChanged)
+        closeButton.target = self
+        closeButton.action = #selector(closeWindow)
+        closeButton.bezelStyle = .rounded
+
+        let grid = NSGridView(views: [
+            [languageLabel, languagePopup],
+            [hotKeyLabel, hotKeyPopup]
+        ])
+        grid.column(at: 0).xPlacement = .trailing
+        grid.column(at: 1).xPlacement = .fill
+        grid.rowSpacing = 12
+        grid.columnSpacing = 12
+        grid.translatesAutoresizingMaskIntoConstraints = false
+
+        let root = NSView()
+        root.addSubview(grid)
+        root.addSubview(closeButton)
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        window.contentView = root
+
+        NSLayoutConstraint.activate([
+            grid.topAnchor.constraint(equalTo: root.topAnchor, constant: 24),
+            grid.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 24),
+            grid.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
+
+            closeButton.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -24),
+            closeButton.bottomAnchor.constraint(equalTo: root.bottomAnchor, constant: -18)
+        ])
+    }
+
+    private func configurePopupTitles() {
+        languagePopup.removeAllItems()
+        for language in LocalizationManager.shared.languages {
+            languagePopup.addItem(withTitle: language.name)
+        }
+        if let index = LocalizationManager.shared.languages.firstIndex(where: { $0.code == LocalizationManager.shared.currentLanguage }) {
+            languagePopup.selectItem(at: index)
+        }
+
+        hotKeyPopup.removeAllItems()
+        for choice in HotKeyChoice.allCases {
+            hotKeyPopup.addItem(withTitle: choice.title)
+        }
+        if let index = HotKeyChoice.allCases.firstIndex(of: HotKeyChoice.current) {
+            hotKeyPopup.selectItem(at: index)
+        }
+    }
+}
+
 final class HotKeyController {
     private var hotKeyRef: EventHotKeyRef?
     private var handlerRef: EventHandlerRef?
@@ -696,36 +1026,44 @@ final class HotKeyController {
         self.onPressed = onPressed
     }
 
-    func register() {
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+    func register(choice: HotKeyChoice) {
+        unregisterHotKey()
 
-        let selfPointer = Unmanaged.passUnretained(self).toOpaque()
-        InstallEventHandler(
-            GetApplicationEventTarget(),
-            { _, _, userData in
-                guard let userData else {
+        guard let keyCode = choice.keyCode else {
+            return
+        }
+
+        if handlerRef == nil {
+            var eventType = EventTypeSpec(
+                eventClass: OSType(kEventClassKeyboard),
+                eventKind: UInt32(kEventHotKeyPressed)
+            )
+
+            let selfPointer = Unmanaged.passUnretained(self).toOpaque()
+            InstallEventHandler(
+                GetApplicationEventTarget(),
+                { _, _, userData in
+                    guard let userData else {
+                        return noErr
+                    }
+
+                    let controller = Unmanaged<HotKeyController>
+                        .fromOpaque(userData)
+                        .takeUnretainedValue()
+                    controller.onPressed()
                     return noErr
-                }
-
-                let controller = Unmanaged<HotKeyController>
-                    .fromOpaque(userData)
-                    .takeUnretainedValue()
-                controller.onPressed()
-                return noErr
-            },
-            1,
-            &eventType,
-            selfPointer,
-            &handlerRef
-        )
+                },
+                1,
+                &eventType,
+                selfPointer,
+                &handlerRef
+            )
+        }
 
         let hotKeyID = EventHotKeyID(signature: OSType(0x4469746F), id: 1)
         RegisterEventHotKey(
-            UInt32(kVK_ANSI_V),
-            UInt32(cmdKey | optionKey),
+            keyCode,
+            choice.modifiers,
             hotKeyID,
             GetApplicationEventTarget(),
             0,
@@ -734,12 +1072,17 @@ final class HotKeyController {
     }
 
     deinit {
-        if let hotKeyRef {
-            UnregisterEventHotKey(hotKeyRef)
-        }
+        unregisterHotKey()
 
         if let handlerRef {
             RemoveEventHandler(handlerRef)
+        }
+    }
+
+    private func unregisterHotKey() {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+            self.hotKeyRef = nil
         }
     }
 }
@@ -752,6 +1095,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var statusItem: NSStatusItem?
     private var statusMenu: NSMenu?
     private var historyWindowController: HistoryWindowController?
+    private var preferencesWindowController: PreferencesWindowController?
     private var previousApplication: NSRunningApplication?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -777,8 +1121,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 self?.showHistory()
             }
         }
-        hotKeyController.register()
+        hotKeyController.register(choice: HotKeyChoice.current)
         self.hotKeyController = hotKeyController
+    }
+
+    private func reloadHotKey() {
+        hotKeyController?.register(choice: HotKeyChoice.current)
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -803,6 +1151,74 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         historyWindowController?.showWindow(nil)
         historyWindowController?.window?.makeKeyAndOrderFront(nil)
         NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func showPreferences() {
+        if preferencesWindowController == nil {
+            preferencesWindowController = PreferencesWindowController { [weak self] in
+                self?.reloadHotKey()
+                self?.refreshLocalizedText()
+            }
+        }
+
+        preferencesWindowController?.refreshText()
+        preferencesWindowController?.showWindow(nil)
+        preferencesWindowController?.window?.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+    }
+
+    @objc private func exportHistory() {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = "Ditto-History.json"
+
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else {
+                return
+            }
+
+            do {
+                try self?.store.exportArchive(to: url)
+                self?.showAlert(message: LocalizationManager.shared.text("export_success"))
+            } catch {
+                self?.showAlert(message: LocalizationManager.shared.text("operation_failed"))
+            }
+        }
+    }
+
+    @objc private func importHistory() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else {
+                return
+            }
+
+            do {
+                try self?.store.importArchive(from: url)
+                self?.historyWindowController?.refresh()
+                self?.showAlert(message: LocalizationManager.shared.text("import_success"))
+            } catch {
+                self?.showAlert(message: LocalizationManager.shared.text("operation_failed"))
+            }
+        }
+    }
+
+    private func showAlert(message: String) {
+        let alert = NSAlert()
+        alert.messageText = LocalizationManager.shared.text("app_name")
+        alert.informativeText = message
+        alert.runModal()
+    }
+
+    private func refreshLocalizedText() {
+        historyWindowController?.refreshText()
+        preferencesWindowController?.refreshText()
+        if let statusMenu {
+            rebuildStatusMenu(statusMenu)
+        }
     }
 
     private func pasteToPreviousApplication() {
@@ -832,7 +1248,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        item.button?.title = "Ditto"
+        item.button?.title = LocalizationManager.shared.text("app_name")
 
         let menu = NSMenu()
         menu.delegate = self
@@ -862,12 +1278,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.removeAllItems()
 
         let showHistoryItem = NSMenuItem(
-            title: "Show History",
+            title: LocalizationManager.shared.text("show_history"),
             action: #selector(showHistory),
             keyEquivalent: ""
         )
         showHistoryItem.target = self
         menu.addItem(showHistoryItem)
+
+        let preferencesItem = NSMenuItem(
+            title: LocalizationManager.shared.text("preferences"),
+            action: #selector(showPreferences),
+            keyEquivalent: ","
+        )
+        preferencesItem.target = self
+        menu.addItem(preferencesItem)
+
+        menu.addItem(.separator())
+
+        let importItem = NSMenuItem(
+            title: LocalizationManager.shared.text("import_history"),
+            action: #selector(importHistory),
+            keyEquivalent: ""
+        )
+        importItem.target = self
+        menu.addItem(importItem)
+
+        let exportItem = NSMenuItem(
+            title: LocalizationManager.shared.text("export_history"),
+            action: #selector(exportHistory),
+            keyEquivalent: ""
+        )
+        exportItem.target = self
+        menu.addItem(exportItem)
 
         let recentEntries = Array(store.entries.prefix(10))
         if recentEntries.isEmpty == false {
@@ -888,7 +1330,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         let quitItem = NSMenuItem(
-            title: "Quit Ditto",
+            title: LocalizationManager.shared.text("quit"),
             action: #selector(quit),
             keyEquivalent: "q"
         )

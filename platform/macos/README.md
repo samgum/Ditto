@@ -12,12 +12,15 @@ The first macOS target is intentionally small:
 - menu bar application
 - polling-based `NSPasteboard` text capture
 - image clipboard capture and image restore to the pasteboard
+- multi-format entries that can store text, RTF, HTML, PNG, and file URLs
 - local history stored under `~/Library/Application Support/Ditto/history.json`
 - history window
 - search in the history window
 - recent items in the menu bar menu
 - global Option+Command+V shortcut to show history
 - copy selected history item back to the pasteboard
+- paste selected history item back into the previous application
+- delete selected history item and clear all history
 - login auto-start through a user LaunchAgent
 - LaunchAgent `KeepAlive` restart after crashes or unexpected exits
 - `.app` and `.dmg` packaging script
@@ -62,6 +65,10 @@ On launch, Ditto writes this user LaunchAgent:
 The agent uses `RunAtLoad` and `KeepAlive`, so Ditto starts on login and is
 restarted by launchd after unexpected exits. Choosing `Quit Ditto` from the menu
 bar item removes the LaunchAgent before terminating the app.
+
+Automatic paste uses a synthesized Command+V key event after restoring focus to
+the previous application. macOS may require enabling Ditto in System Settings >
+Privacy & Security > Accessibility before this works.
 
 ## Migration direction
 

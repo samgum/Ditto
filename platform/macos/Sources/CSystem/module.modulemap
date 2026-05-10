@@ -1,0 +1,6 @@
+module CSystem [system] {
+    header "shim.h"
+    link "sqlite3"
+    link "z"
+    export *
+}

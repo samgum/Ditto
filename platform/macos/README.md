@@ -25,6 +25,8 @@ The first macOS target is intentionally small:
 - paste selected history item back into the previous application
 - delete selected history item and clear all history
 - import and export a self-contained Ditto macOS history archive as JSON
+- import Windows Ditto SQLite databases (`Ditto.db`) and Ditto SQLite export
+  files into the macOS history
 - login auto-start through a user LaunchAgent
 - LaunchAgent `KeepAlive` restart after crashes or unexpected exits
 - `.app` and `.dmg` packaging script
@@ -80,8 +82,15 @@ the previous application. macOS may require enabling Ditto in System Settings >
 Privacy & Security > Accessibility before this works.
 
 History import/export uses a macOS-specific JSON archive. RTF, HTML, and image
-payloads are embedded as base64 so the archive can be moved between Macs. This
-is not yet the same format as the Windows Ditto SQLite database.
+payloads are embedded as base64 so the archive can be moved between Macs.
+
+Windows Ditto database migration is available from the menu bar item through
+`Import Windows Ditto Database...`. It reads the original `Main` and `Data`
+SQLite tables from `Ditto.db`, plus Ditto SQLite export files that store
+compressed `lOriginalSize` payloads. The importer maps `CF_UNICODETEXT`,
+`CF_TEXT`, `Rich Text Format`, `HTML Format`, `PNG`, `CF_DIB`, and `CF_HDROP`
+into the macOS history. Windows-only clipboard formats are skipped because
+macOS cannot paste those native Win32 payloads directly.
 
 ## Migration direction
 

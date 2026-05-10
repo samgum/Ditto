@@ -57,6 +57,7 @@ final class LocalizationManager {
         "show_history": "Show History",
         "preferences": "Preferences...",
         "import_history": "Import History...",
+        "import_windows_database": "Import Windows Ditto Database...",
         "export_history": "Export History...",
         "quit": "Quit Ditto",
         "search": "Search",
@@ -79,6 +80,7 @@ final class LocalizationManager {
         "close": "Close",
         "disabled": "Disabled",
         "import_success": "History imported.",
+        "import_windows_success": "Windows Ditto database imported.",
         "export_success": "History exported.",
         "operation_failed": "Operation failed."
     ]
@@ -489,6 +491,36 @@ final class ClipboardStore {
         entries = (importedEntries + entries).sorted { $0.createdAt > $1.createdAt }
         trim()
         save()
+    }
+
+    @discardableResult
+    func importWindowsDittoDatabase(from url: URL) throws -> Int {
+        let importer = WindowsDittoDatabaseImporter { [weak self] data, fileExtension in
+            self?.saveBlob(data, fileExtension: fileExtension)
+        }
+        let importedEntries = try importer.importEntries(from: url)
+        mergeImportedEntries(importedEntries)
+        return importedEntries.count
+    }
+
+    private func mergeImportedEntries(_ importedEntries: [ClipboardEntry]) {
+        let importedKeys = Set(importedEntries.map(importKey(for:)))
+        removeEntries { importedKeys.contains(importKey(for: $0)) }
+        entries = (importedEntries + entries).sorted { $0.createdAt > $1.createdAt }
+        trim()
+        save()
+    }
+
+    private func importKey(for entry: ClipboardEntry) -> String {
+        [
+            "\(Int(entry.createdAt.timeIntervalSince1970))",
+            entry.text ?? "",
+            entry.rtfFileName == nil ? "" : "rtf",
+            entry.htmlFileName == nil ? "" : "html",
+            entry.imageFileName == nil ? "" : "image",
+            entry.fileURLs?.joined(separator: "\u{1f}") ?? "",
+            entry.groupName ?? ""
+        ].joined(separator: "\u{1e}")
     }
 
     private func removeEntries(where predicate: (ClipboardEntry) -> Bool) {
@@ -1414,6 +1446,26 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
     }
 
+    @objc private func importWindowsDatabase() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "db") ?? .data]
+        panel.allowsMultipleSelection = false
+
+        panel.begin { [weak self] response in
+            guard response == .OK, let url = panel.url else {
+                return
+            }
+
+            do {
+                try self?.store.importWindowsDittoDatabase(from: url)
+                self?.historyWindowController?.refresh()
+                self?.showAlert(message: LocalizationManager.shared.text("import_windows_success"))
+            } catch {
+                self?.showAlert(message: LocalizationManager.shared.text("operation_failed"))
+            }
+        }
+    }
+
     private func showAlert(message: String) {
         let alert = NSAlert()
         alert.messageText = LocalizationManager.shared.text("app_name")
@@ -1510,6 +1562,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         )
         importItem.target = self
         menu.addItem(importItem)
+
+        let importWindowsDatabaseItem = NSMenuItem(
+            title: LocalizationManager.shared.text("import_windows_database"),
+            action: #selector(importWindowsDatabase),
+            keyEquivalent: ""
+        )
+        importWindowsDatabaseItem.target = self
+        menu.addItem(importWindowsDatabaseItem)
 
         let exportItem = NSMenuItem(
             title: LocalizationManager.shared.text("export_history"),

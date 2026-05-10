@@ -11,8 +11,13 @@ let package = Package(
         .executable(name: "DittoMac", targets: ["DittoMac"])
     ],
     targets: [
+        .systemLibrary(
+            name: "CSystem",
+            path: "Sources/CSystem"
+        ),
         .executableTarget(
             name: "DittoMac",
+            dependencies: ["CSystem"],
             path: "Sources/DittoMac"
         )
     ]

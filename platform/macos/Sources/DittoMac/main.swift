@@ -1,12 +1,26 @@
 import AppKit
+import Carbon
 import Darwin
 
 struct ClipboardEntry: Codable, Equatable {
     let id: UUID
-    let text: String
+    let text: String?
+    let imageFileName: String?
     let createdAt: Date
 
+    var isImage: Bool {
+        imageFileName != nil
+    }
+
+    var searchableText: String {
+        text ?? "image screenshot picture"
+    }
+
     var preview: String {
+        guard let text else {
+            return "Image"
+        }
+
         let normalized = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -23,6 +37,7 @@ struct ClipboardEntry: Codable, Equatable {
 
 final class ClipboardStore {
     private let fileURL: URL
+    private let imagesDirectory: URL
     private(set) var entries: [ClipboardEntry] = []
 
     init() {
@@ -36,10 +51,15 @@ final class ClipboardStore {
             withIntermediateDirectories: true
         )
         fileURL = directory.appendingPathComponent("history.json")
+        imagesDirectory = directory.appendingPathComponent("Images", isDirectory: true)
+        try? FileManager.default.createDirectory(
+            at: imagesDirectory,
+            withIntermediateDirectories: true
+        )
         load()
     }
 
-    func add(text: String) {
+    func addText(_ text: String) {
         let value = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard value.isEmpty == false else {
             return
@@ -51,20 +71,95 @@ final class ClipboardStore {
 
         entries.removeAll { $0.text == text }
         entries.insert(
-            ClipboardEntry(id: UUID(), text: text, createdAt: Date()),
+            ClipboardEntry(id: UUID(), text: text, imageFileName: nil, createdAt: Date()),
             at: 0
         )
 
-        if entries.count > 500 {
-            entries.removeLast(entries.count - 500)
-        }
+        trim()
 
         save()
     }
 
+    func addImageData(_ data: Data) {
+        guard data.isEmpty == false else {
+            return
+        }
+
+        let fileName = "\(UUID().uuidString).png"
+        let fileURL = imagesDirectory.appendingPathComponent(fileName)
+
+        guard (try? data.write(to: fileURL, options: .atomic)) != nil else {
+            return
+        }
+
+        entries.insert(
+            ClipboardEntry(id: UUID(), text: nil, imageFileName: fileName, createdAt: Date()),
+            at: 0
+        )
+
+        trim()
+        save()
+    }
+
+    func entry(id: UUID) -> ClipboardEntry? {
+        entries.first { $0.id == id }
+    }
+
+    func imageData(for entry: ClipboardEntry) -> Data? {
+        guard let imageFileName = entry.imageFileName else {
+            return nil
+        }
+
+        return try? Data(contentsOf: imagesDirectory.appendingPathComponent(imageFileName))
+    }
+
+    func copyToPasteboard(_ entry: ClipboardEntry) {
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+
+        if let text = entry.text {
+            pasteboard.setString(text, forType: .string)
+            return
+        }
+
+        guard
+            let data = imageData(for: entry),
+            let image = NSImage(data: data)
+        else {
+            return
+        }
+
+        pasteboard.writeObjects([image])
+    }
+
     func removeAll() {
         entries.removeAll()
+        try? FileManager.default.removeItem(at: imagesDirectory)
+        try? FileManager.default.createDirectory(
+            at: imagesDirectory,
+            withIntermediateDirectories: true
+        )
         save()
+    }
+
+    private func trim() {
+        if entries.count > 500 {
+            let removedEntries = entries.suffix(entries.count - 500)
+            for entry in removedEntries {
+                removeImageFile(for: entry)
+            }
+            entries.removeLast(entries.count - 500)
+        }
+    }
+
+    private func removeImageFile(for entry: ClipboardEntry) {
+        guard let imageFileName = entry.imageFileName else {
+            return
+        }
+
+        try? FileManager.default.removeItem(
+            at: imagesDirectory.appendingPathComponent(imageFileName)
+        )
     }
 
     private func load() {
@@ -112,12 +207,31 @@ final class ClipboardMonitor {
 
         lastChangeCount = pasteboard.changeCount
 
-        guard let text = pasteboard.string(forType: .string) else {
+        if let text = pasteboard.string(forType: .string) {
+            store.addText(text)
+            onChange?()
             return
         }
 
-        store.add(text: text)
-        onChange?()
+        if let data = ClipboardMonitor.imageData(from: pasteboard) {
+            store.addImageData(data)
+            onChange?()
+        }
+    }
+
+    private static func imageData(from pasteboard: NSPasteboard) -> Data? {
+        if let pngData = pasteboard.data(forType: .png) {
+            return pngData
+        }
+
+        guard
+            let tiffData = pasteboard.data(forType: .tiff),
+            let bitmap = NSBitmapImageRep(data: tiffData)
+        else {
+            return nil
+        }
+
+        return bitmap.representation(using: .png, properties: [:])
     }
 }
 
@@ -229,7 +343,10 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
             filteredEntries = store.entries
         } else {
             filteredEntries = store.entries.filter {
-                $0.text.range(of: query, options: [.caseInsensitive, .diacriticInsensitive]) != nil
+                $0.searchableText.range(
+                    of: query,
+                    options: [.caseInsensitive, .diacriticInsensitive]
+                ) != nil
             }
         }
 
@@ -261,7 +378,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         if tableColumn?.identifier.rawValue == "date" {
             textField.stringValue = dateFormatter.string(from: entry.createdAt)
         } else {
-            textField.stringValue = entry.preview
+            textField.stringValue = entry.isImage ? "Image" : entry.preview
         }
 
         if cell.textField == nil {
@@ -286,9 +403,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         }
 
         let entry = filteredEntries[row]
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(entry.text, forType: .string)
+        store.copyToPasteboard(entry)
     }
 
     @objc private func searchChanged() {
@@ -377,11 +492,70 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
     }
 }
 
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class HotKeyController {
+    private var hotKeyRef: EventHotKeyRef?
+    private var handlerRef: EventHandlerRef?
+    private let onPressed: () -> Void
+
+    init(onPressed: @escaping () -> Void) {
+        self.onPressed = onPressed
+    }
+
+    func register() {
+        var eventType = EventTypeSpec(
+            eventClass: OSType(kEventClassKeyboard),
+            eventKind: UInt32(kEventHotKeyPressed)
+        )
+
+        let selfPointer = Unmanaged.passUnretained(self).toOpaque()
+        InstallEventHandler(
+            GetApplicationEventTarget(),
+            { _, _, userData in
+                guard let userData else {
+                    return noErr
+                }
+
+                let controller = Unmanaged<HotKeyController>
+                    .fromOpaque(userData)
+                    .takeUnretainedValue()
+                controller.onPressed()
+                return noErr
+            },
+            1,
+            &eventType,
+            selfPointer,
+            &handlerRef
+        )
+
+        var hotKeyID = EventHotKeyID(signature: OSType(0x4469746F), id: 1)
+        RegisterEventHotKey(
+            UInt32(kVK_ANSI_V),
+            UInt32(cmdKey | optionKey),
+            hotKeyID,
+            GetApplicationEventTarget(),
+            0,
+            &hotKeyRef
+        )
+    }
+
+    deinit {
+        if let hotKeyRef {
+            UnregisterEventHotKey(hotKeyRef)
+        }
+
+        if let handlerRef {
+            RemoveEventHandler(handlerRef)
+        }
+    }
+}
+
+final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private let store = ClipboardStore()
     private let loginAgentManager = LoginAgentManager()
     private var monitor: ClipboardMonitor?
+    private var hotKeyController: HotKeyController?
     private var statusItem: NSStatusItem?
+    private var statusMenu: NSMenu?
     private var historyWindowController: HistoryWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -390,6 +564,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             "Ditto monitors the clipboard from the menu bar."
         )
         loginAgentManager.installOrRefresh()
+        registerHotKey()
         configureStatusItem()
 
         let monitor = ClipboardMonitor(store: store)
@@ -398,6 +573,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         monitor.start()
         self.monitor = monitor
+    }
+
+    private func registerHotKey() {
+        let hotKeyController = HotKeyController { [weak self] in
+            DispatchQueue.main.async {
+                self?.showHistory()
+            }
+        }
+        hotKeyController.register()
+        self.hotKeyController = hotKeyController
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
@@ -425,6 +610,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         item.button?.title = "Ditto"
 
         let menu = NSMenu()
+        menu.delegate = self
+        statusMenu = menu
+        rebuildStatusMenu(menu)
+        item.menu = menu
+        statusItem = item
+    }
+
+    func menuWillOpen(_ menu: NSMenu) {
+        rebuildStatusMenu(menu)
+    }
+
+    @objc private func copyRecentMenuItem(_ sender: NSMenuItem) {
+        guard
+            let idString = sender.representedObject as? String,
+            let id = UUID(uuidString: idString),
+            let entry = store.entry(id: id)
+        else {
+            return
+        }
+
+        store.copyToPasteboard(entry)
+    }
+
+    private func rebuildStatusMenu(_ menu: NSMenu) {
+        menu.removeAllItems()
+
         let showHistoryItem = NSMenuItem(
             title: "Show History",
             action: #selector(showHistory),
@@ -432,6 +643,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         showHistoryItem.target = self
         menu.addItem(showHistoryItem)
+
+        let recentEntries = Array(store.entries.prefix(10))
+        if recentEntries.isEmpty == false {
+            menu.addItem(.separator())
+        }
+
+        for entry in recentEntries {
+            let item = NSMenuItem(
+                title: entry.preview,
+                action: #selector(copyRecentMenuItem(_:)),
+                keyEquivalent: ""
+            )
+            item.target = self
+            item.representedObject = entry.id.uuidString
+            menu.addItem(item)
+        }
 
         menu.addItem(.separator())
 
@@ -442,9 +669,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         )
         quitItem.target = self
         menu.addItem(quitItem)
-
-        item.menu = menu
-        statusItem = item
     }
 }
 

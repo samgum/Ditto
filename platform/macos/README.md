@@ -11,8 +11,12 @@ The first macOS target is intentionally small:
 
 - menu bar application
 - polling-based `NSPasteboard` text capture
+- image clipboard capture and image restore to the pasteboard
 - local history stored under `~/Library/Application Support/Ditto/history.json`
 - history window
+- search in the history window
+- recent items in the menu bar menu
+- global Option+Command+V shortcut to show history
 - copy selected history item back to the pasteboard
 - login auto-start through a user LaunchAgent
 - LaunchAgent `KeepAlive` restart after crashes or unexpected exits

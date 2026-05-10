@@ -59,6 +59,11 @@ platform/macos/dist/Ditto-macOS.dmg
 The DMG contains `Ditto.app` and an `/Applications` shortcut. For a stable login
 item path, drag `Ditto.app` into `/Applications` before launching it.
 
+The CI package is ad-hoc signed so the app bundle has a valid local code
+signature. It is not yet notarized with an Apple Developer ID certificate, so a
+downloaded build can still require right-click Open or explicit approval in
+System Settings > Privacy & Security.
+
 On launch, Ditto writes this user LaunchAgent:
 
 ```text

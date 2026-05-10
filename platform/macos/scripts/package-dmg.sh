@@ -51,6 +51,9 @@ if [[ -f "$ICON_SOURCE" ]]; then
   iconutil -c icns "$ICONSET_DIR" -o "$RESOURCES_DIR/Ditto.icns"
 fi
 
+codesign --force --deep --sign - "$APP_DIR"
+codesign --verify --deep --strict --verbose=2 "$APP_DIR"
+
 mkdir -p "$STAGING_DIR"
 cp -R "$APP_DIR" "$STAGING_DIR/Ditto.app"
 ln -s /Applications "$STAGING_DIR/Applications"

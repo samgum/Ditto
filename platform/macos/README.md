@@ -17,6 +17,7 @@ The first macOS target is intentionally small:
 - history window
 - search in the history window
 - recent items in the menu bar menu
+- favorites and group filtering in the history window
 - global Option+Command+V shortcut to show history
 - configurable global hot key from Preferences
 - English, Simplified Chinese, and Traditional Chinese language packs

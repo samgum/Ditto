@@ -66,6 +66,13 @@ final class LocalizationManager {
         "copy": "Copy",
         "paste": "Paste",
         "delete": "Delete",
+        "favorite": "Favorite",
+        "favorites": "Favorites",
+        "group": "Group",
+        "all_groups": "All",
+        "ungrouped": "Ungrouped",
+        "set_group": "Set Group...",
+        "group_name": "Group name",
         "clear": "Clear",
         "language": "Language",
         "hot_key": "Hot Key",
@@ -145,6 +152,20 @@ struct ClipboardEntry: Codable, Equatable {
     let imageFileName: String?
     let fileURLs: [String]?
     let createdAt: Date
+    var isFavorite: Bool?
+    var groupName: String?
+
+    var favorite: Bool {
+        isFavorite ?? false
+    }
+
+    var displayGroup: String? {
+        guard let groupName = groupName?.trimmingCharacters(in: .whitespacesAndNewlines), groupName.isEmpty == false else {
+            return nil
+        }
+
+        return groupName
+    }
 
     var isImage: Bool {
         imageFileName != nil
@@ -193,6 +214,10 @@ struct ClipboardEntry: Codable, Equatable {
             values.append(contentsOf: fileURLs)
         }
 
+        if let displayGroup {
+            values.append(displayGroup)
+        }
+
         values.append(typeLabel)
         return values.joined(separator: "\n")
     }
@@ -239,6 +264,8 @@ final class ClipboardStore {
         let imageBase64: String?
         let fileURLs: [String]?
         let createdAt: Date
+        let isFavorite: Bool?
+        let groupName: String?
     }
 
     private let fileURL: URL
@@ -308,7 +335,9 @@ final class ClipboardStore {
                 htmlFileName: htmlFileName,
                 imageFileName: imageFileName,
                 fileURLs: files.isEmpty ? nil : files,
-                createdAt: Date()
+                createdAt: Date(),
+                isFavorite: nil,
+                groupName: nil
             ),
             at: 0
         )
@@ -372,6 +401,31 @@ final class ClipboardStore {
         save()
     }
 
+    func toggleFavorite(id: UUID) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        entries[index].isFavorite = !(entries[index].isFavorite ?? false)
+        save()
+    }
+
+    func setGroup(id: UUID, groupName: String?) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else {
+            return
+        }
+
+        let normalized = groupName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        entries[index].groupName = normalized?.isEmpty == false ? normalized : nil
+        save()
+    }
+
+    var groupNames: [String] {
+        Array(Set(entries.compactMap(\.displayGroup))).sorted {
+            $0.localizedCaseInsensitiveCompare($1) == .orderedAscending
+        }
+    }
+
     func exportArchive(to url: URL) throws {
         let archive = ClipboardArchive(
             version: 1,
@@ -383,7 +437,9 @@ final class ClipboardStore {
                     htmlBase64: entry.htmlFileName.flatMap { blobData(named: $0)?.base64EncodedString() },
                     imageBase64: entry.imageFileName.flatMap { _ in imageData(for: entry)?.base64EncodedString() },
                     fileURLs: entry.fileURLs,
-                    createdAt: entry.createdAt
+                    createdAt: entry.createdAt,
+                    isFavorite: entry.isFavorite,
+                    groupName: entry.groupName
                 )
             }
         )
@@ -421,7 +477,9 @@ final class ClipboardStore {
                     htmlFileName: htmlFileName,
                     imageFileName: imageFileName,
                     fileURLs: archiveEntry.fileURLs,
-                    createdAt: archiveEntry.createdAt
+                    createdAt: archiveEntry.createdAt,
+                    isFavorite: archiveEntry.isFavorite,
+                    groupName: archiveEntry.groupName
                 )
             )
         }
@@ -663,15 +721,26 @@ final class LoginAgentManager {
 }
 
 final class HistoryWindowController: NSWindowController, NSTableViewDataSource, NSTableViewDelegate {
+    private enum GroupFilter: Equatable {
+        case all
+        case favorites
+        case ungrouped
+        case group(String)
+    }
+
     private let store: ClipboardStore
     private let pasteHandler: () -> Void
     private let searchField = NSSearchField()
+    private let groupFilterPopup = NSPopUpButton()
     private let tableView = NSTableView()
     private let copyButton = NSButton(title: "", target: nil, action: nil)
     private let pasteButton = NSButton(title: "", target: nil, action: nil)
+    private let favoriteButton = NSButton(title: "", target: nil, action: nil)
+    private let groupButton = NSButton(title: "", target: nil, action: nil)
     private let deleteButton = NSButton(title: "", target: nil, action: nil)
     private let clearButton = NSButton(title: "", target: nil, action: nil)
     private var filteredEntries: [ClipboardEntry] = []
+    private var currentGroupFilter: GroupFilter = .all
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
@@ -708,14 +777,21 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
     func refreshText() {
         window?.title = LocalizationManager.shared.text("app_name")
         searchField.placeholderString = LocalizationManager.shared.text("search")
+        rebuildGroupFilterPopup()
         tableView.tableColumns.first { $0.identifier.rawValue == "clip" }?.title =
             LocalizationManager.shared.text("clip")
         tableView.tableColumns.first { $0.identifier.rawValue == "type" }?.title =
             LocalizationManager.shared.text("type")
+        tableView.tableColumns.first { $0.identifier.rawValue == "favorite" }?.title =
+            LocalizationManager.shared.text("favorite")
+        tableView.tableColumns.first { $0.identifier.rawValue == "group" }?.title =
+            LocalizationManager.shared.text("group")
         tableView.tableColumns.first { $0.identifier.rawValue == "date" }?.title =
             LocalizationManager.shared.text("date")
         copyButton.title = LocalizationManager.shared.text("copy")
         pasteButton.title = LocalizationManager.shared.text("paste")
+        favoriteButton.title = LocalizationManager.shared.text("favorite")
+        groupButton.title = LocalizationManager.shared.text("set_group")
         deleteButton.title = LocalizationManager.shared.text("delete")
         clearButton.title = LocalizationManager.shared.text("clear")
         tableView.reloadData()
@@ -723,16 +799,25 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
 
     private func applySearch() {
         let query = searchField.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if query.isEmpty {
-            filteredEntries = store.entries
-        } else {
-            filteredEntries = store.entries.filter {
-                $0.searchableText.range(
-                    of: query,
-                    options: [.caseInsensitive, .diacriticInsensitive]
-                ) != nil
+        filteredEntries = store.entries.filter { entry in
+            let matchesGroup: Bool
+            switch currentGroupFilter {
+            case .all:
+                matchesGroup = true
+            case .favorites:
+                matchesGroup = entry.favorite
+            case .ungrouped:
+                matchesGroup = entry.displayGroup == nil
+            case .group(let group):
+                matchesGroup = entry.displayGroup == group
             }
+
+            let matchesSearch = query.isEmpty || entry.searchableText.range(
+                of: query,
+                options: [.caseInsensitive, .diacriticInsensitive]
+            ) != nil
+
+            return matchesGroup && matchesSearch
         }
 
         tableView.reloadData()
@@ -764,6 +849,10 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
             textField.stringValue = dateFormatter.string(from: entry.createdAt)
         } else if tableColumn?.identifier.rawValue == "type" {
             textField.stringValue = entry.typeLabel
+        } else if tableColumn?.identifier.rawValue == "favorite" {
+            textField.stringValue = entry.favorite ? "★" : ""
+        } else if tableColumn?.identifier.rawValue == "group" {
+            textField.stringValue = entry.displayGroup ?? ""
         } else {
             textField.stringValue = entry.preview
         }
@@ -808,7 +897,66 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         refresh()
     }
 
+    @objc private func toggleFavoriteSelectedEntry() {
+        let row = tableView.selectedRow
+        guard row >= 0, row < filteredEntries.count else {
+            return
+        }
+
+        store.toggleFavorite(id: filteredEntries[row].id)
+        refresh()
+    }
+
+    @objc private func setGroupForSelectedEntry() {
+        let row = tableView.selectedRow
+        guard row >= 0, row < filteredEntries.count else {
+            return
+        }
+
+        let entry = filteredEntries[row]
+        let alert = NSAlert()
+        alert.messageText = LocalizationManager.shared.text("set_group")
+        alert.informativeText = LocalizationManager.shared.text("group_name")
+        alert.addButton(withTitle: "OK")
+        alert.addButton(withTitle: LocalizationManager.shared.text("clear"))
+
+        let input = NSTextField(frame: NSRect(x: 0, y: 0, width: 260, height: 24))
+        input.stringValue = entry.displayGroup ?? ""
+        alert.accessoryView = input
+
+        let response = alert.runModal()
+        if response == .alertFirstButtonReturn {
+            store.setGroup(id: entry.id, groupName: input.stringValue)
+        } else {
+            store.setGroup(id: entry.id, groupName: nil)
+        }
+
+        rebuildGroupFilterPopup()
+        refresh()
+    }
+
     @objc private func searchChanged() {
+        applySearch()
+    }
+
+    @objc private func groupFilterChanged() {
+        let index = groupFilterPopup.indexOfSelectedItem
+        switch index {
+        case 0:
+            currentGroupFilter = .all
+        case 1:
+            currentGroupFilter = .favorites
+        case 2:
+            currentGroupFilter = .ungrouped
+        default:
+            let groupIndex = index - 3
+            let groups = store.groupNames
+            if groupIndex >= 0, groupIndex < groups.count {
+                currentGroupFilter = .group(groups[groupIndex])
+            } else {
+                currentGroupFilter = .all
+            }
+        }
         applySearch()
     }
 
@@ -832,6 +980,11 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         searchField.sendsSearchStringImmediately = true
         searchField.translatesAutoresizingMaskIntoConstraints = false
 
+        groupFilterPopup.target = self
+        groupFilterPopup.action = #selector(groupFilterChanged)
+        groupFilterPopup.translatesAutoresizingMaskIntoConstraints = false
+        rebuildGroupFilterPopup()
+
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.rowHeight = 30
         tableView.headerView = nil
@@ -850,6 +1003,16 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         typeColumn.width = 80
         tableView.addTableColumn(typeColumn)
 
+        let favoriteColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("favorite"))
+        favoriteColumn.title = LocalizationManager.shared.text("favorite")
+        favoriteColumn.width = 70
+        tableView.addTableColumn(favoriteColumn)
+
+        let groupColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("group"))
+        groupColumn.title = LocalizationManager.shared.text("group")
+        groupColumn.width = 120
+        tableView.addTableColumn(groupColumn)
+
         let dateColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("date"))
         dateColumn.title = LocalizationManager.shared.text("date")
         dateColumn.width = 180
@@ -867,6 +1030,16 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         pasteButton.action = #selector(pasteSelectedEntry)
         pasteButton.bezelStyle = .rounded
 
+        favoriteButton.title = LocalizationManager.shared.text("favorite")
+        favoriteButton.target = self
+        favoriteButton.action = #selector(toggleFavoriteSelectedEntry)
+        favoriteButton.bezelStyle = .rounded
+
+        groupButton.title = LocalizationManager.shared.text("set_group")
+        groupButton.target = self
+        groupButton.action = #selector(setGroupForSelectedEntry)
+        groupButton.bezelStyle = .rounded
+
         deleteButton.title = LocalizationManager.shared.text("delete")
         deleteButton.target = self
         deleteButton.action = #selector(deleteSelectedEntry)
@@ -877,13 +1050,14 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         clearButton.action = #selector(clearHistory)
         clearButton.bezelStyle = .rounded
 
-        let toolbar = NSStackView(views: [copyButton, pasteButton, deleteButton, clearButton])
+        let toolbar = NSStackView(views: [copyButton, pasteButton, favoriteButton, groupButton, deleteButton, clearButton])
         toolbar.orientation = .horizontal
         toolbar.spacing = 8
         toolbar.translatesAutoresizingMaskIntoConstraints = false
 
         let root = NSView()
         root.addSubview(searchField)
+        root.addSubview(groupFilterPopup)
         root.addSubview(scrollView)
         root.addSubview(toolbar)
         window.contentView = root
@@ -891,7 +1065,11 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         NSLayoutConstraint.activate([
             searchField.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
             searchField.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            searchField.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            searchField.trailingAnchor.constraint(equalTo: groupFilterPopup.leadingAnchor, constant: -8),
+
+            groupFilterPopup.topAnchor.constraint(equalTo: searchField.topAnchor),
+            groupFilterPopup.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
+            groupFilterPopup.widthAnchor.constraint(equalToConstant: 170),
 
             toolbar.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
             toolbar.trailingAnchor.constraint(lessThanOrEqualTo: root.trailingAnchor, constant: -12),
@@ -902,6 +1080,36 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -12)
         ])
+    }
+
+    private func rebuildGroupFilterPopup() {
+        let selected = currentGroupFilter
+        groupFilterPopup.removeAllItems()
+        groupFilterPopup.addItem(withTitle: LocalizationManager.shared.text("all_groups"))
+        groupFilterPopup.addItem(withTitle: LocalizationManager.shared.text("favorites"))
+        groupFilterPopup.addItem(withTitle: LocalizationManager.shared.text("ungrouped"))
+
+        let groups = store.groupNames
+        for group in groups {
+            groupFilterPopup.addItem(withTitle: group)
+        }
+
+        currentGroupFilter = selected
+        switch selected {
+        case .all:
+            groupFilterPopup.selectItem(at: 0)
+        case .favorites:
+            groupFilterPopup.selectItem(at: 1)
+        case .ungrouped:
+            groupFilterPopup.selectItem(at: 2)
+        case .group(let group):
+            if let index = groups.firstIndex(of: group) {
+                groupFilterPopup.selectItem(at: index + 3)
+            } else {
+                currentGroupFilter = .all
+                groupFilterPopup.selectItem(at: 0)
+            }
+        }
     }
 }
 

@@ -63,6 +63,12 @@ final class LocalizationManager {
         "search": "Search",
         "clip": "Clip",
         "type": "Type",
+        "all_types": "All Types",
+        "text_clips": "Text",
+        "image_clips": "Images",
+        "file_clips": "Files",
+        "rich_text_clips": "RTF",
+        "html_clips": "HTML",
         "date": "Date",
         "copy": "Copy",
         "paste": "Paste",
@@ -77,6 +83,7 @@ final class LocalizationManager {
         "clear": "Clear",
         "language": "Language",
         "hot_key": "Hot Key",
+        "max_history": "Max History",
         "close": "Close",
         "disabled": "Disabled",
         "import_success": "History imported.",
@@ -142,6 +149,22 @@ enum HotKeyChoice: String, CaseIterable {
             return UInt32(cmdKey | shiftKey)
         case .disabled:
             return 0
+        }
+    }
+}
+
+enum DittoSettings {
+    private static let maxHistoryKey = "Ditto.MaxHistory"
+
+    static let maxHistoryOptions = [100, 500, 1_000, 2_000, 5_000]
+
+    static var maxHistoryEntries: Int {
+        get {
+            let value = UserDefaults.standard.integer(forKey: maxHistoryKey)
+            return maxHistoryOptions.contains(value) ? value : 500
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: maxHistoryKey)
         }
     }
 }
@@ -501,13 +524,19 @@ final class ClipboardStore {
         try? database.removeAll()
     }
 
+    func enforceLimit() {
+        trim()
+        save()
+    }
+
     private func trim() {
-        if entries.count > 500 {
-            let removedEntries = entries.suffix(entries.count - 500)
+        let maxEntries = max(DittoSettings.maxHistoryEntries, 1)
+        if entries.count > maxEntries {
+            let removedEntries = entries.suffix(entries.count - maxEntries)
             for entry in removedEntries {
                 removeBlobFiles(for: entry)
             }
-            entries.removeLast(entries.count - 500)
+            entries.removeLast(entries.count - maxEntries)
         }
     }
 
@@ -716,9 +745,19 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         case group(String)
     }
 
+    private enum TypeFilter: Equatable {
+        case all
+        case text
+        case images
+        case files
+        case richText
+        case html
+    }
+
     private let store: ClipboardStore
     private let pasteHandler: () -> Void
     private let searchField = NSSearchField()
+    private let typeFilterPopup = NSPopUpButton()
     private let groupFilterPopup = NSPopUpButton()
     private let tableView = NSTableView()
     private let copyButton = NSButton(title: "", target: nil, action: nil)
@@ -729,6 +768,8 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
     private let clearButton = NSButton(title: "", target: nil, action: nil)
     private var filteredEntries: [ClipboardEntry] = []
     private var currentGroupFilter: GroupFilter = .all
+    private var currentTypeFilter: TypeFilter = .all
+    private var keyEventMonitor: Any?
     private let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateStyle = .short
@@ -752,10 +793,19 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         super.init(window: window)
         filteredEntries = store.entries
         configureContent()
+        keyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            self?.handleKeyDown(event) ?? event
+        }
     }
 
     required init?(coder: NSCoder) {
         nil
+    }
+
+    deinit {
+        if let keyEventMonitor {
+            NSEvent.removeMonitor(keyEventMonitor)
+        }
     }
 
     func refresh() {
@@ -765,6 +815,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
     func refreshText() {
         window?.title = LocalizationManager.shared.text("app_name")
         searchField.placeholderString = LocalizationManager.shared.text("search")
+        rebuildTypeFilterPopup()
         rebuildGroupFilterPopup()
         tableView.tableColumns.first { $0.identifier.rawValue == "clip" }?.title =
             LocalizationManager.shared.text("clip")
@@ -800,12 +851,28 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
                 matchesGroup = entry.displayGroup == group
             }
 
+            let matchesType: Bool
+            switch currentTypeFilter {
+            case .all:
+                matchesType = true
+            case .text:
+                matchesType = entry.text?.isEmpty == false && entry.isRichText == false && entry.isHTML == false
+            case .images:
+                matchesType = entry.isImage
+            case .files:
+                matchesType = entry.isFileDrop
+            case .richText:
+                matchesType = entry.isRichText
+            case .html:
+                matchesType = entry.isHTML
+            }
+
             let matchesSearch = query.isEmpty || entry.searchableText.range(
                 of: query,
                 options: [.caseInsensitive, .diacriticInsensitive]
             ) != nil
 
-            return matchesGroup && matchesSearch
+            return matchesGroup && matchesType && matchesSearch
         }
 
         tableView.reloadData()
@@ -948,9 +1015,72 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         applySearch()
     }
 
+    @objc private func typeFilterChanged() {
+        switch typeFilterPopup.indexOfSelectedItem {
+        case 1:
+            currentTypeFilter = .text
+        case 2:
+            currentTypeFilter = .images
+        case 3:
+            currentTypeFilter = .files
+        case 4:
+            currentTypeFilter = .richText
+        case 5:
+            currentTypeFilter = .html
+        default:
+            currentTypeFilter = .all
+        }
+
+        applySearch()
+    }
+
     @objc private func clearHistory() {
         store.removeAll()
         refresh()
+    }
+
+    private func handleKeyDown(_ event: NSEvent) -> NSEvent? {
+        guard window?.isKeyWindow == true else {
+            return event
+        }
+
+        let modifierFlags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        if modifierFlags == .command, event.charactersIgnoringModifiers?.lowercased() == "f" {
+            searchField.becomeFirstResponder()
+            return nil
+        }
+
+        if modifierFlags == .command, event.charactersIgnoringModifiers?.lowercased() == "c" {
+            copySelectedEntry()
+            return nil
+        }
+
+        if modifierFlags == .command, event.charactersIgnoringModifiers?.lowercased() == "v" {
+            pasteSelectedEntry()
+            return nil
+        }
+
+        if window?.firstResponder is NSTextView {
+            if Int(event.keyCode) == kVK_Escape {
+                window?.makeFirstResponder(tableView)
+                return nil
+            }
+            return event
+        }
+
+        switch Int(event.keyCode) {
+        case kVK_Return, kVK_ANSI_KeypadEnter:
+            pasteSelectedEntry()
+            return nil
+        case kVK_Delete, kVK_ForwardDelete:
+            deleteSelectedEntry()
+            return nil
+        case kVK_Escape:
+            window?.orderOut(nil)
+            return nil
+        default:
+            return event
+        }
     }
 
     private func configureContent() {
@@ -972,6 +1102,11 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         groupFilterPopup.action = #selector(groupFilterChanged)
         groupFilterPopup.translatesAutoresizingMaskIntoConstraints = false
         rebuildGroupFilterPopup()
+
+        typeFilterPopup.target = self
+        typeFilterPopup.action = #selector(typeFilterChanged)
+        typeFilterPopup.translatesAutoresizingMaskIntoConstraints = false
+        rebuildTypeFilterPopup()
 
         tableView.usesAlternatingRowBackgroundColors = true
         tableView.rowHeight = 30
@@ -1045,6 +1180,7 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
 
         let root = NSView()
         root.addSubview(searchField)
+        root.addSubview(typeFilterPopup)
         root.addSubview(groupFilterPopup)
         root.addSubview(scrollView)
         root.addSubview(toolbar)
@@ -1053,7 +1189,11 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
         NSLayoutConstraint.activate([
             searchField.topAnchor.constraint(equalTo: root.topAnchor, constant: 12),
             searchField.leadingAnchor.constraint(equalTo: root.leadingAnchor, constant: 12),
-            searchField.trailingAnchor.constraint(equalTo: groupFilterPopup.leadingAnchor, constant: -8),
+            searchField.trailingAnchor.constraint(equalTo: typeFilterPopup.leadingAnchor, constant: -8),
+
+            typeFilterPopup.topAnchor.constraint(equalTo: searchField.topAnchor),
+            typeFilterPopup.trailingAnchor.constraint(equalTo: groupFilterPopup.leadingAnchor, constant: -8),
+            typeFilterPopup.widthAnchor.constraint(equalToConstant: 130),
 
             groupFilterPopup.topAnchor.constraint(equalTo: searchField.topAnchor),
             groupFilterPopup.trailingAnchor.constraint(equalTo: root.trailingAnchor, constant: -12),
@@ -1068,6 +1208,33 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
             scrollView.trailingAnchor.constraint(equalTo: root.trailingAnchor),
             scrollView.bottomAnchor.constraint(equalTo: toolbar.topAnchor, constant: -12)
         ])
+    }
+
+    private func rebuildTypeFilterPopup() {
+        let selected = currentTypeFilter
+        typeFilterPopup.removeAllItems()
+        typeFilterPopup.addItem(withTitle: LocalizationManager.shared.text("all_types"))
+        typeFilterPopup.addItem(withTitle: LocalizationManager.shared.text("text_clips"))
+        typeFilterPopup.addItem(withTitle: LocalizationManager.shared.text("image_clips"))
+        typeFilterPopup.addItem(withTitle: LocalizationManager.shared.text("file_clips"))
+        typeFilterPopup.addItem(withTitle: LocalizationManager.shared.text("rich_text_clips"))
+        typeFilterPopup.addItem(withTitle: LocalizationManager.shared.text("html_clips"))
+        currentTypeFilter = selected
+
+        switch selected {
+        case .all:
+            typeFilterPopup.selectItem(at: 0)
+        case .text:
+            typeFilterPopup.selectItem(at: 1)
+        case .images:
+            typeFilterPopup.selectItem(at: 2)
+        case .files:
+            typeFilterPopup.selectItem(at: 3)
+        case .richText:
+            typeFilterPopup.selectItem(at: 4)
+        case .html:
+            typeFilterPopup.selectItem(at: 5)
+        }
     }
 
     private func rebuildGroupFilterPopup() {
@@ -1104,8 +1271,10 @@ final class HistoryWindowController: NSWindowController, NSTableViewDataSource, 
 final class PreferencesWindowController: NSWindowController {
     private let languageLabel = NSTextField(labelWithString: "")
     private let hotKeyLabel = NSTextField(labelWithString: "")
+    private let maxHistoryLabel = NSTextField(labelWithString: "")
     private let languagePopup = NSPopUpButton()
     private let hotKeyPopup = NSPopUpButton()
+    private let maxHistoryPopup = NSPopUpButton()
     private let closeButton = NSButton(title: "", target: nil, action: nil)
     private let onChanged: () -> Void
 
@@ -1113,7 +1282,7 @@ final class PreferencesWindowController: NSWindowController {
         self.onChanged = onChanged
 
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 420, height: 170),
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 210),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: false
@@ -1133,6 +1302,7 @@ final class PreferencesWindowController: NSWindowController {
         window?.title = LocalizationManager.shared.text("preferences")
         languageLabel.stringValue = LocalizationManager.shared.text("language")
         hotKeyLabel.stringValue = LocalizationManager.shared.text("hot_key")
+        maxHistoryLabel.stringValue = LocalizationManager.shared.text("max_history")
         closeButton.title = LocalizationManager.shared.text("close")
         configurePopupTitles()
     }
@@ -1146,6 +1316,16 @@ final class PreferencesWindowController: NSWindowController {
 
     @objc private func hotKeyChanged() {
         HotKeyChoice.current = HotKeyChoice.allCases[hotKeyPopup.indexOfSelectedItem]
+        onChanged()
+    }
+
+    @objc private func maxHistoryChanged() {
+        let index = maxHistoryPopup.indexOfSelectedItem
+        guard index >= 0, index < DittoSettings.maxHistoryOptions.count else {
+            return
+        }
+
+        DittoSettings.maxHistoryEntries = DittoSettings.maxHistoryOptions[index]
         onChanged()
     }
 
@@ -1164,13 +1344,16 @@ final class PreferencesWindowController: NSWindowController {
         languagePopup.action = #selector(languageChanged)
         hotKeyPopup.target = self
         hotKeyPopup.action = #selector(hotKeyChanged)
+        maxHistoryPopup.target = self
+        maxHistoryPopup.action = #selector(maxHistoryChanged)
         closeButton.target = self
         closeButton.action = #selector(closeWindow)
         closeButton.bezelStyle = .rounded
 
         let grid = NSGridView(views: [
             [languageLabel, languagePopup],
-            [hotKeyLabel, hotKeyPopup]
+            [hotKeyLabel, hotKeyPopup],
+            [maxHistoryLabel, maxHistoryPopup]
         ])
         grid.column(at: 0).xPlacement = .trailing
         grid.column(at: 1).xPlacement = .fill
@@ -1209,6 +1392,14 @@ final class PreferencesWindowController: NSWindowController {
         }
         if let index = HotKeyChoice.allCases.firstIndex(of: HotKeyChoice.current) {
             hotKeyPopup.selectItem(at: index)
+        }
+
+        maxHistoryPopup.removeAllItems()
+        for option in DittoSettings.maxHistoryOptions {
+            maxHistoryPopup.addItem(withTitle: "\(option)")
+        }
+        if let index = DittoSettings.maxHistoryOptions.firstIndex(of: DittoSettings.maxHistoryEntries) {
+            maxHistoryPopup.selectItem(at: index)
         }
     }
 }
@@ -1353,6 +1544,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if preferencesWindowController == nil {
             preferencesWindowController = PreferencesWindowController { [weak self] in
                 self?.reloadHotKey()
+                self?.store.enforceLimit()
+                self?.historyWindowController?.refresh()
                 self?.refreshLocalizedText()
             }
         }

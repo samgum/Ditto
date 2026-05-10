@@ -29,4 +29,11 @@
   "search": "搜尋",
   "show_history": "顯示歷史",
   "type": "類型"
+  ,"all_types": "全部類型"
+  ,"text_clips": "文字"
+  ,"image_clips": "圖片"
+  ,"file_clips": "檔案"
+  ,"rich_text_clips": "RTF"
+  ,"html_clips": "HTML"
+  ,"max_history": "最大歷史筆數"
 }

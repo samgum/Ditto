@@ -29,4 +29,11 @@
   "search": "Search",
   "show_history": "Show History",
   "type": "Type"
+  ,"all_types": "All Types"
+  ,"text_clips": "Text"
+  ,"image_clips": "Images"
+  ,"file_clips": "Files"
+  ,"rich_text_clips": "RTF"
+  ,"html_clips": "HTML"
+  ,"max_history": "Max History"
 }

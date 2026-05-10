@@ -17,10 +17,14 @@ The first macOS target is intentionally small:
   `~/Library/Application Support/Ditto/Ditto.db`
 - history window
 - search in the history window
+- type filtering in the history window for text, images, files, RTF, and HTML
 - recent items in the menu bar menu
 - favorites and group filtering in the history window
+- keyboard actions in the history window: Return to paste, Command+C to copy,
+  Command+V to paste, Delete to remove, Command+F to search, Escape to close
 - global Option+Command+V shortcut to show history
 - configurable global hot key from Preferences
+- configurable maximum history size from Preferences
 - English, Simplified Chinese, and Traditional Chinese language packs
 - copy selected history item back to the pasteboard
 - paste selected history item back into the previous application

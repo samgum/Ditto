@@ -29,4 +29,11 @@
   "search": "搜索",
   "show_history": "显示历史",
   "type": "类型"
+  ,"all_types": "全部类型"
+  ,"text_clips": "文本"
+  ,"image_clips": "图片"
+  ,"file_clips": "文件"
+  ,"rich_text_clips": "RTF"
+  ,"html_clips": "HTML"
+  ,"max_history": "最大历史条数"
 }

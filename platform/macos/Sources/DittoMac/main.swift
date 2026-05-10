@@ -527,7 +527,7 @@ final class HotKeyController {
             &handlerRef
         )
 
-        var hotKeyID = EventHotKeyID(signature: OSType(0x4469746F), id: 1)
+        let hotKeyID = EventHotKeyID(signature: OSType(0x4469746F), id: 1)
         RegisterEventHotKey(
             UInt32(kVK_ANSI_V),
             UInt32(cmdKey | optionKey),

@@ -1751,6 +1751,14 @@ void CQPasteWnd::AddShowStarredClipsMenuItem(CMenu* pMenu)
 	}
 
 	CString csText = theApp.m_Language.GetString(_T("ShowStarredClips"), _T("Show Starred Clips"));
+	CString shortcutText = m_actions.GetCmdKeyText(ActionEnums::SHOW_STARRED_CLIPS);
+	if (shortcutText != _T("") &&
+		csText.Find(_T("\t")) < 0)
+	{
+		csText += _T("\t");
+		csText += shortcutText;
+	}
+
 	CString csFilterOn(_T("Filter On Selected Clip"));
 	int nPos = -1;
 	CMenu* pParentMenu = CMultiLanguage::GetMenuPos(pMenu, csFilterOn, nPos);
@@ -3079,13 +3087,20 @@ BOOL CQPasteWnd::PreTranslateMessage(MSG* pMsg)
 		}
 		else if (pMsg->message == WM_CHAR)
 		{
-			auto f = this->GetFocus();
-			if (f != NULL && f->m_hWnd == m_lstHeader.m_hWnd)
+			if (pMsg->hwnd == m_lstHeader.m_hWnd)
 			{
-				CString x((TCHAR)pMsg->wParam);
-				m_search.SetWindowText(x);
+				bool bStartNewSearch = (::GetFocus() != m_search.m_hWnd);
+				TCHAR ch = (TCHAR)pMsg->wParam;
 				m_search.SetFocus();
-				m_search.SetSel(1, 1);
+				CString csSearch;
+				if (bStartNewSearch == false)
+				{
+					m_search.GetWindowText(csSearch);
+				}
+				csSearch += ch;
+				m_search.SetWindowText(csSearch);
+				int nLen = csSearch.GetLength();
+				m_search.SetSel(nLen, nLen);
 
 				OnSearchEditChange();
 
@@ -3557,6 +3572,10 @@ bool CQPasteWnd::DoAction(CAccel a)
 		break;
 	case ActionEnums::PASTE_AS_IMAGE:
 		ret = DoPasteAsImage();
+		break;
+	case ActionEnums::SHOW_STARRED_CLIPS:
+		OnMenuShowStarredClips();
+		ret = true;
 		break;
 	}
 
